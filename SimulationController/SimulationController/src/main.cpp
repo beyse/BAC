@@ -18,6 +18,8 @@
 
 
 using boost::asio::ip::udp;
+using boost::asio::ip::tcp;
+
 using namespace std;
 
 struct VehicleInput {
@@ -71,9 +73,9 @@ class Interface {
 public:
 	Interface(string ip = "127.0.0.1", int port = 9999) {
 		socket.reset(new udp::socket(io_service, udp::endpoint(udp::v4(), 9999)));
-		//socket->non_blocking(true);
+		socket->non_blocking(true);
 	}
-	void Connect(string remote_ip, int remote_port) {
+	void SetRemoteEndpoint(string remote_ip, int remote_port) {
 		remote_endpoint = udp::endpoint(boost::asio::ip::address().from_string(remote_ip), remote_port);
 	}
 	bool Send(const std::string &message) {
@@ -87,6 +89,43 @@ public:
 			return false;
 		}
 	}
+	bool Receive(std::string &message) {
+		if (socket.get() == 0) {
+			return false;
+		}
+
+		message = "";
+		while (true) {
+			//try {
+			
+			boost::array<char, 4096> recv_buf;
+
+			//boost::asio::mutable_buffer mutable_buffer((void*)buffer.data(), buffer.size());
+
+			int received = 0;
+			try {
+				received = socket->receive_from(boost::asio::buffer(recv_buf), remote_endpoint);
+			} catch (boost::system::system_error e) {
+				/*if (e == boost::asio::error::would_block) {
+					break;
+				} else {
+					throw (e);
+				}*/
+				break;
+			}
+			//std::cout.write(recv_buf.data(), received);
+			message.append(recv_buf.data(), received);
+
+			if (received < 4096) {
+				break;
+			}
+
+			//} catch (boost::asio::error::would_block e) {
+
+			//}
+		}
+	}
+
 
 private:
 	boost::asio::io_service io_service;
@@ -100,10 +139,10 @@ int main() {
 	Interface blenderInterface;
 	VehicleInput vehicleInput;
 
-	blenderInterface.Connect("127.0.0.1", 9994);
+	blenderInterface.SetRemoteEndpoint("127.0.0.1", 9990);
 
 	while (true) {
-		char key = _getch();
+		char key = cv::waitKey(3);
 		
 		switch (key) {
 		case 'w': 
@@ -128,7 +167,8 @@ int main() {
 		}
 
 		blenderInterface.Send(vehicleInput.toString());
-
+		std::string data;
+		blenderInterface.Receive(data);
 	}
 
 }
