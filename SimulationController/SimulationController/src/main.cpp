@@ -17,7 +17,7 @@
 #include <conio.h>
 
 
-using boost::asio::ip::udp;
+//using boost::asio::ip::udp;
 using boost::asio::ip::tcp;
 
 using namespace std;
@@ -72,18 +72,32 @@ struct SimulationOutput {
 class Interface {
 public:
 	Interface(string ip = "127.0.0.1", int port = 9999) {
-		socket.reset(new udp::socket(io_service, udp::endpoint(udp::v4(), 9999)));
+		//socket.reset(new udp::socket(io_service, udp::endpoint(udp::v4(), 9999)));
+		socket.reset(new tcp::socket(io_service, tcp::endpoint(tcp::v4(), 9999)));
 		socket->non_blocking(true);
 	}
-	void SetRemoteEndpoint(string remote_ip, int remote_port) {
-		remote_endpoint = udp::endpoint(boost::asio::ip::address().from_string(remote_ip), remote_port);
+	bool Connect(string remote_ip, int remote_port) {
+		//remote_endpoint = udp::endpoint(boost::asio::ip::address().from_string(remote_ip), remote_port);
+		remote_endpoint = tcp::endpoint(boost::asio::ip::address().from_string(remote_ip), remote_port);
+		boost::system::error_code error = boost::asio::error::host_not_found;
+
+		if (socket.get() == 0) {
+			return false;
+		}
+
+		socket->connect(remote_endpoint, error);
+		if (error) {
+			return false;
+		}
+
+		return true;
 	}
 	bool Send(const std::string &message) {
 		if (socket.get() == 0) {
 			return false;
 		}
 
-		size_t bytes_sent = socket->send_to(boost::asio::buffer(message), remote_endpoint);
+		size_t bytes_sent = socket->send(boost::asio::buffer(message), remote_endpoint);
 
 		if (bytes_sent != message.length()) {
 			return false;
@@ -129,8 +143,8 @@ public:
 
 private:
 	boost::asio::io_service io_service;
-	std::unique_ptr<udp::socket> socket;
-	udp::endpoint remote_endpoint;
+	std::unique_ptr<tcp::socket> socket;
+	tcp::endpoint remote_endpoint;
 	boost::array<char, 1024> recv_buf;
 };
 
@@ -139,7 +153,7 @@ int main() {
 	Interface blenderInterface;
 	VehicleInput vehicleInput;
 
-	blenderInterface.SetRemoteEndpoint("127.0.0.1", 9990);
+	blenderInterface.Connect("127.0.0.1", 9990);
 
 	while (true) {
 		char key = cv::waitKey(3);
