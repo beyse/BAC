@@ -16,6 +16,9 @@
 
 #include <conio.h>
 
+#include <thread>
+#include <mutex>
+
 
 //using boost::asio::ip::udp;
 using boost::asio::ip::tcp;
@@ -69,12 +72,22 @@ struct SimulationOutput {
 
 };
 
+uint32_t decode(char* bytes) { //decodes 4 byte little endian encoded byte array to unsigned 32 bit integer
+
+	uint32_t retval = bytes[0] + (bytes[1] << 8) + (bytes[2] << 16) + (bytes[3] << 24);
+	return retval;
+}
+
+
 class Interface {
 public:
-	Interface(string ip = "127.0.0.1", int port = 9999) {
+	Interface(string ip = "127.0.0.1", int port = 9993) {
 		//socket.reset(new udp::socket(io_service, udp::endpoint(udp::v4(), 9999)));
-		socket.reset(new tcp::socket(io_service, tcp::endpoint(tcp::v4(), 9999)));
-		socket->non_blocking(true);
+		socket.reset(new tcp::socket(io_service, tcp::endpoint(tcp::v4(), port)));
+		socket->non_blocking(false);
+		boost::asio::socket_base::receive_buffer_size bufSize(20000000);
+		socket->set_option(bufSize);
+		connected = false;
 	}
 	bool Connect(string remote_ip, int remote_port) {
 		//remote_endpoint = udp::endpoint(boost::asio::ip::address().from_string(remote_ip), remote_port);
@@ -89,55 +102,93 @@ public:
 		if (error) {
 			return false;
 		}
-
+		connected = true;
 		return true;
 	}
 	bool Send(const std::string &message) {
 		if (socket.get() == 0) {
 			return false;
 		}
-
-		size_t bytes_sent = socket->send(boost::asio::buffer(message), remote_endpoint);
-
+		if (!connected) {
+			return false;
+		}
+		std::lock_guard<std::mutex> lock(mutex);
+		size_t bytes_sent = socket->send(boost::asio::buffer(message));
 		if (bytes_sent != message.length()) {
 			return false;
 		}
 	}
-	bool Receive(std::string &message) {
+	bool Receive() {
 		if (socket.get() == 0) {
 			return false;
 		}
-
-		message = "";
-		while (true) {
-			//try {
-			
-			boost::array<char, 4096> recv_buf;
-
-			//boost::asio::mutable_buffer mutable_buffer((void*)buffer.data(), buffer.size());
-
-			int received = 0;
-			try {
-				received = socket->receive_from(boost::asio::buffer(recv_buf), remote_endpoint);
-			} catch (boost::system::system_error e) {
-				/*if (e == boost::asio::error::would_block) {
-					break;
-				} else {
-					throw (e);
-				}*/
-				break;
-			}
-			//std::cout.write(recv_buf.data(), received);
-			message.append(recv_buf.data(), received);
-
-			if (received < 4096) {
-				break;
-			}
-
-			//} catch (boost::asio::error::would_block e) {
-
-			//}
+		if (!connected) {
+			return false;
 		}
+
+		std::lock_guard<std::mutex> lock(mutex);
+		size_t received = 0;
+		uint32_t width;
+		uint32_t height;
+		uint32_t awaited = 0;
+
+		{
+			static boost::array<char, 1024> recv_buf;
+
+			try {
+				received = socket->receive(boost::asio::buffer(recv_buf));
+			}
+			catch (boost::system::system_error e) {
+				return false;
+			}
+
+
+			if (received == 12) {
+				awaited = decode(recv_buf.c_array());
+				width = decode(recv_buf.c_array() + 4);
+				height = decode(recv_buf.c_array() + 8);
+				received = 0;
+			}
+		}
+		try {
+			socket->send(boost::asio::buffer("ack"));
+		}
+		catch (boost::system::system_error e) {
+			std::cout << e.what() << std::endl;
+
+		}
+		{
+			static boost::array<char, 1024 * 1024 * 100> recv_buf;
+			received = 0;
+			while (received < awaited) {
+
+				try {
+					received += socket->receive(boost::asio::buffer(recv_buf));
+				} catch (boost::system::system_error e) {
+					return false;
+				}
+
+			}
+			try {
+				socket->send(boost::asio::buffer("ack"));
+			} catch(boost::system::system_error e) {
+				std::cout << e.what() << std::endl;
+			}
+			if (received > 0) {
+
+//				cv::Mat img(height, width, CV_8UC4, (void*)recv_buf.data());
+				cv::Mat img(height, width, CV_8UC3, (void*)recv_buf.data());
+
+				//cv::cvtColor(img, img, CV_BGRA2RGBA);
+				//std::memcpy((void*)img.data, recv_buf.data(), received);
+				cv::imshow("img", img);
+				cv::waitKey(1);
+				return true;
+
+			}
+
+		}
+
 	}
 
 
@@ -146,17 +197,47 @@ private:
 	std::unique_ptr<tcp::socket> socket;
 	tcp::endpoint remote_endpoint;
 	boost::array<char, 1024> recv_buf;
+	bool connected;
+	std::mutex mutex;
 };
 
+
 int main() {
+
+	
 
 	Interface blenderInterface;
 	VehicleInput vehicleInput;
 
-	blenderInterface.Connect("127.0.0.1", 9990);
+	std::string remote_ip = "127.0.0.1";
+	int remote_port = 9981;
+	cout << "Trying to connect to " << remote_ip << ":" << remote_port <<"... "<< endl;
+	while (true) {
+
+		if (!blenderInterface.Connect(remote_ip, remote_port)) {
+			std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+		} else {
+			break;
+		}
+	}
+
+	cout << "Connected!" << endl;
+	cout << "Press W, A, S, D or SPACE to send input to simulation:" << endl;
+
+	std::thread receiverThread = std::thread([&] {
+		
+		while (true) {
+			std::string message;
+			bool ok;
+			ok = blenderInterface.Receive();
+			if (ok) {
+				//cout << "received something" << endl;
+			}
+		}
+	});
 
 	while (true) {
-		char key = cv::waitKey(3);
+		char key = _getche();
 		
 		switch (key) {
 		case 'w': 
@@ -182,7 +263,7 @@ int main() {
 
 		blenderInterface.Send(vehicleInput.toString());
 		std::string data;
-		blenderInterface.Receive(data);
+
 	}
 
 }
