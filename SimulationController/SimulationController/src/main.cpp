@@ -19,9 +19,8 @@
 
 #include <thread>
 #include <mutex>
+#include <functional>
 
-
-//using boost::asio::ip::udp;
 using boost::asio::ip::tcp;
 
 using namespace std;
@@ -65,25 +64,19 @@ struct VehicleInput {
 	}
 };
 
-struct SimulationOutput {
-	SimulationOutput() {
-	}
-
-	cv::Mat image;
-
-};
-
-uint32_t decode(unsigned char* bytes) { //decodes 4 byte little endian encoded byte array to unsigned 32 bit integer
+//decodes 4 byte little endian encoded byte array to unsigned 32 bit integer
+uint32_t decode(unsigned char* bytes) { 
 
 	uint32_t retval = bytes[0] + (bytes[1] << 8) + (bytes[2] << 16) + (bytes[3] << 24);
 	return retval;
 }
 
+typedef std::function<void(cv::Mat &)> ImageCallbackFunction;
 
 class Interface {
 public:
-	Interface(string ip = "127.0.0.1", int steeringPort = 9994, int imagePort = 9993) {
-
+	Interface(ImageCallbackFunction callback, string ip = "127.0.0.1", int steeringPort = 9994, int imagePort = 9993) {
+		imageCallback = callback;
 		steeringSocket.reset(new tcp::socket(io_service, tcp::endpoint(tcp::v4(), steeringPort)));
 		steeringSocket->non_blocking(true);
 
@@ -121,7 +114,8 @@ public:
 		connected = true;
 		return true;
 	}
-	bool Send(const std::string &message) {
+	bool Send(VehicleInput input) {
+		std::string message = input.toString();
 		if (steeringSocket.get() == 0) {
 			return false;
 		}
@@ -133,7 +127,7 @@ public:
 			return false;
 		}
 	}
-	bool Receive(cv::Mat &image) {
+	bool Receive() {
 		if (imageSocket.get() == 0) {
 			return false;
 		}
@@ -151,8 +145,7 @@ public:
 
 			try {
 				received = imageSocket->receive(boost::asio::buffer(recv_buf));
-			}
-			catch (boost::system::system_error e) {
+			} catch (boost::system::system_error e) {
 				imageSocket->close();
 				imageSocket = 0;
 				return false;
@@ -203,11 +196,14 @@ public:
 				if (width > 0 && height > 0) {
 					
 					cv::Mat img(height, width, CV_8UC4, (void*)boost::asio::buffer_cast<const void*>(buffer.data()));
-
 					cv::cvtColor(img, img, CV_BGRA2RGBA);
-					cv::imshow("img", img);
-					cv::waitKey(1);
-					image = img.clone();
+					//cv::imshow("img", img);
+					//cv::waitKey(1);
+					{//scope for mutex lock
+						std::lock_guard<std::mutex> lock(callbackMutex); //create a lock to ensure callback function will only be executed once at a time
+						imageCallback(img.clone());
+					}
+					//img.clone()
 					return true;
 				}
 				else {
@@ -227,10 +223,28 @@ private:
 	std::unique_ptr<tcp::socket> imageSocket;
 	tcp::endpoint remoteSteeringEndpoint;
 	tcp::endpoint remoteImageEndpoint;
-	boost::array<char, 1024> recv_buf;
+	ImageCallbackFunction imageCallback;
+	std::mutex callbackMutex;
 	bool connected;
 };
 
+
+class ImageProcessing {
+public:
+	ImageProcessing() {
+
+	}
+
+	void setImage(const cv::Mat& image) {
+		cv::imshow("Simulation Output", image);
+		cv::Mat img = image.clone();
+		double t1 = 0.3, t2 = 0.8;
+		cv::Canny(img, img, t1, t2);
+		cv::imshow("Processed", img);
+
+		cv::waitKey(1);
+	}
+};
 
 int main() {
 
@@ -242,7 +256,14 @@ int main() {
 	std::cout << "remote steering port: ";
 	std::cin >> remoteSteeringPort;
 
-	Interface blenderInterface;
+	ImageProcessing virtualDriver;
+
+	ImageCallbackFunction imageCallback = [&virtualDriver](cv::Mat& image) {
+		virtualDriver.setImage(image);
+	};
+
+
+	Interface blenderInterface(imageCallback);
 	VehicleInput vehicleInput;
 
 	std::string remoteIP = "127.0.0.1";
@@ -264,7 +285,7 @@ int main() {
 		while (true) {
 			std::string message;
 			bool ok;
-			ok = blenderInterface.Receive(img);
+			ok = blenderInterface.Receive();
 			if (ok) {
 				//cout << "received something" << endl;
 			}
