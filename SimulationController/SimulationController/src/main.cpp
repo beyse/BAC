@@ -3,6 +3,7 @@
 #include <iostream>
 
 #include <boost/array.hpp>
+#include <boost/asio/streambuf.hpp>
 #include <boost/asio.hpp>
 
 #include <boost/algorithm/string.hpp>
@@ -72,7 +73,7 @@ struct SimulationOutput {
 
 };
 
-uint32_t decode(char* bytes) { //decodes 4 byte little endian encoded byte array to unsigned 32 bit integer
+uint32_t decode(unsigned char* bytes) { //decodes 4 byte little endian encoded byte array to unsigned 32 bit integer
 
 	uint32_t retval = bytes[0] + (bytes[1] << 8) + (bytes[2] << 16) + (bytes[3] << 24);
 	return retval;
@@ -81,64 +82,79 @@ uint32_t decode(char* bytes) { //decodes 4 byte little endian encoded byte array
 
 class Interface {
 public:
-	Interface(string ip = "127.0.0.1", int port = 9993) {
-		//socket.reset(new udp::socket(io_service, udp::endpoint(udp::v4(), 9999)));
-		socket.reset(new tcp::socket(io_service, tcp::endpoint(tcp::v4(), port)));
-		socket->non_blocking(false);
+	Interface(string ip = "127.0.0.1", int steeringPort = 9994, int imagePort = 9993) {
+
+		steeringSocket.reset(new tcp::socket(io_service, tcp::endpoint(tcp::v4(), steeringPort)));
+		steeringSocket->non_blocking(true);
+
+		imageSocket.reset(new tcp::socket(io_service, tcp::endpoint(tcp::v4(), imagePort)));
+		imageSocket->non_blocking(false);
+
+
 		boost::asio::socket_base::receive_buffer_size bufSize(20000000);
-		socket->set_option(bufSize);
+		imageSocket->set_option(bufSize); //todo check if this brings some advantages
+
 		connected = false;
 	}
-	bool Connect(string remote_ip, int remote_port) {
+	bool Connect(string remoteIP, int remoteSteeringPort, int remoteImagePort) {
 		//remote_endpoint = udp::endpoint(boost::asio::ip::address().from_string(remote_ip), remote_port);
-		remote_endpoint = tcp::endpoint(boost::asio::ip::address().from_string(remote_ip), remote_port);
+		auto ip = boost::asio::ip::address().from_string(remoteIP);
+		remoteSteeringEndpoint = tcp::endpoint(ip, remoteSteeringPort);
+		remoteImageEndpoint = tcp::endpoint(ip, remoteImagePort);
+
 		boost::system::error_code error = boost::asio::error::host_not_found;
 
-		if (socket.get() == 0) {
+		if (steeringSocket.get() == 0) {
 			return false;
 		}
 
-		socket->connect(remote_endpoint, error);
+		steeringSocket->connect(remoteSteeringEndpoint, error);
 		if (error) {
 			return false;
 		}
+
+		imageSocket->connect(remoteImageEndpoint, error);
+		if (error) {
+			return false;
+		}
+
 		connected = true;
 		return true;
 	}
 	bool Send(const std::string &message) {
-		if (socket.get() == 0) {
+		if (steeringSocket.get() == 0) {
 			return false;
 		}
 		if (!connected) {
 			return false;
 		}
-		std::lock_guard<std::mutex> lock(mutex);
-		size_t bytes_sent = socket->send(boost::asio::buffer(message));
+		size_t bytes_sent = steeringSocket->send(boost::asio::buffer(message));
 		if (bytes_sent != message.length()) {
 			return false;
 		}
 	}
-	bool Receive() {
-		if (socket.get() == 0) {
+	bool Receive(cv::Mat &image) {
+		if (imageSocket.get() == 0) {
 			return false;
 		}
 		if (!connected) {
 			return false;
 		}
 
-		std::lock_guard<std::mutex> lock(mutex);
 		size_t received = 0;
-		uint32_t width;
-		uint32_t height;
+		uint32_t width = 0;
+		uint32_t height = 0;
 		uint32_t awaited = 0;
 
 		{
-			static boost::array<char, 1024> recv_buf;
+			static boost::array<unsigned char, 1024> recv_buf;
 
 			try {
-				received = socket->receive(boost::asio::buffer(recv_buf));
+				received = imageSocket->receive(boost::asio::buffer(recv_buf));
 			}
 			catch (boost::system::system_error e) {
+				imageSocket->close();
+				imageSocket = 0;
 				return false;
 			}
 
@@ -151,39 +167,52 @@ public:
 			}
 		}
 		try {
-			socket->send(boost::asio::buffer("ack"));
-		}
-		catch (boost::system::system_error e) {
+			imageSocket->send(boost::asio::buffer("ack"));
+		} catch (boost::system::system_error e) {
 			std::cout << e.what() << std::endl;
 
 		}
 		{
-			static boost::array<char, 1024 * 1024 * 100> recv_buf;
+			//static boost::array<unsigned char, 1024 * 1024 * 100> recv_buf;
+			boost::asio::streambuf buffer;
+			boost::asio::streambuf::mutable_buffers_type bufs = buffer.prepare(awaited);
+
 			received = 0;
 			while (received < awaited) {
 
 				try {
-					received += socket->receive(boost::asio::buffer(recv_buf));
+					//received += imageSocket->receive(boost::asio::buffer(recv_buf));
+					received += imageSocket->read_some(bufs);
 				} catch (boost::system::system_error e) {
+					imageSocket->close();
+					imageSocket = 0;
 					return false;
 				}
 
 			}
+
+			buffer.commit(received);
+
 			try {
-				socket->send(boost::asio::buffer("ack"));
+				imageSocket->send(boost::asio::buffer("ack"));
 			} catch(boost::system::system_error e) {
 				std::cout << e.what() << std::endl;
 			}
 			if (received > 0) {
 
-//				cv::Mat img(height, width, CV_8UC4, (void*)recv_buf.data());
-				cv::Mat img(height, width, CV_8UC3, (void*)recv_buf.data());
+				if (width > 0 && height > 0) {
+					
+					cv::Mat img(height, width, CV_8UC4, (void*)boost::asio::buffer_cast<const void*>(buffer.data()));
 
-				//cv::cvtColor(img, img, CV_BGRA2RGBA);
-				//std::memcpy((void*)img.data, recv_buf.data(), received);
-				cv::imshow("img", img);
-				cv::waitKey(1);
-				return true;
+					cv::cvtColor(img, img, CV_BGRA2RGBA);
+					cv::imshow("img", img);
+					cv::waitKey(1);
+					image = img.clone();
+					return true;
+				}
+				else {
+					return false;
+				}
 
 			}
 
@@ -194,27 +223,34 @@ public:
 
 private:
 	boost::asio::io_service io_service;
-	std::unique_ptr<tcp::socket> socket;
-	tcp::endpoint remote_endpoint;
+	std::unique_ptr<tcp::socket> steeringSocket;
+	std::unique_ptr<tcp::socket> imageSocket;
+	tcp::endpoint remoteSteeringEndpoint;
+	tcp::endpoint remoteImageEndpoint;
 	boost::array<char, 1024> recv_buf;
 	bool connected;
-	std::mutex mutex;
 };
 
 
 int main() {
 
-	
+	int remoteImagePort = 9771;
+	int remoteSteeringPort = 9772;
+
+	std::cout << "remote image port: ";
+	std::cin >> remoteImagePort;
+	std::cout << "remote steering port: ";
+	std::cin >> remoteSteeringPort;
 
 	Interface blenderInterface;
 	VehicleInput vehicleInput;
 
-	std::string remote_ip = "127.0.0.1";
-	int remote_port = 9981;
-	cout << "Trying to connect to " << remote_ip << ":" << remote_port <<"... "<< endl;
+	std::string remoteIP = "127.0.0.1";
+
+	cout << "Trying to connect to " << remoteIP << ":" << remoteSteeringPort << " and " << remoteImagePort <<"... "<< endl;
 	while (true) {
 
-		if (!blenderInterface.Connect(remote_ip, remote_port)) {
+		if (!blenderInterface.Connect(remoteIP, remoteSteeringPort, remoteImagePort)) {
 			std::this_thread::sleep_for(std::chrono::milliseconds(1000));
 		} else {
 			break;
@@ -223,13 +259,12 @@ int main() {
 
 	cout << "Connected!" << endl;
 	cout << "Press W, A, S, D or SPACE to send input to simulation:" << endl;
-
 	std::thread receiverThread = std::thread([&] {
-		
+		cv::Mat img;
 		while (true) {
 			std::string message;
 			bool ok;
-			ok = blenderInterface.Receive();
+			ok = blenderInterface.Receive(img);
 			if (ok) {
 				//cout << "received something" << endl;
 			}
