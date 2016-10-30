@@ -239,7 +239,7 @@ public:
 		cv::imshow("Simulation Output", image);
 		cv::Mat img = image.clone();
 		double t1 = 0.3, t2 = 0.8;
-		cv::Canny(img, img, t1, t2);
+		cv::blur(img, img, cv::Size(11, 11));
 		cv::imshow("Processed", img);
 
 		cv::waitKey(1);

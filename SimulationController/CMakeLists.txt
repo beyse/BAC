@@ -34,3 +34,5 @@ add_subdirectory("${ROBVIS_CMAKE_DIRECTORY}/.." robvis)
 
 robvis_begin_targets_group("SimulationController")
 add_subdirectory(SimulationController)
+robvis_begin_targets_group("Experiments")
+add_subdirectory(Experiments)
