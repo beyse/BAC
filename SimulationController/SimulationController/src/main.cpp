@@ -238,15 +238,34 @@ public:
 	void setImage(const cv::Mat& image) {
 		cv::imshow("Simulation Output", image);
 		cv::Mat img = image.clone();
-		double t1 = 0.3, t2 = 0.8;
-		cv::blur(img, img, cv::Size(11, 11));
-		cv::imshow("Processed", img);
+	/*	double t1 = 0.3, t2 = 0.8;
+		cv::blur(img, img, cv::Size(11, 11));*/
 
+		cv::Mat edges;
+		double t1 = 60.0, t2 = 100.0;
+		int aperture = 3;
+		cv::Canny(img, edges, t1, t2, aperture);
+
+		cv::Mat bin;
+		double max = 255;
+		int blockSize = 101;
+		double c = -40.0;
+
+		cv::Mat gray;
+		cv::cvtColor(img, gray, CV_BGR2GRAY);
+		cv::adaptiveThreshold(gray, bin, max, CV_ADAPTIVE_THRESH_GAUSSIAN_C, CV_THRESH_BINARY, blockSize, c);
+
+		cv::imshow("Edges", edges);
+		cv::imshow("Binary", bin);
+		//cv::imwrite("C:\\Temp\\example.png", image);
 		cv::waitKey(1);
 	}
 };
 
 int main() {
+
+	//cv::Mat image = cv::imread("C:\\Temp\\example.png");
+	//return 0;
 
 	int remoteImagePort = 9771;
 	int remoteSteeringPort = 9772;

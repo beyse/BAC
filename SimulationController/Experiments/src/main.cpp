@@ -40,7 +40,7 @@ public:
 
 int main() {
 	
-	std::string groundTruthDir = "C:\\Users\\Sebastian\\Desktop\\ground_truth";
+	std::string groundTruthDir = "C:\\Users\\Sebastian\\Desktop\\BAC\\GT-30-10-16";
 	std::map<int /*frame number*/, cv::Mat> frames;
 	std::map<int /*frame number*/, double> steeringAngles;
 	
@@ -54,13 +54,13 @@ int main() {
 		if (fs::is_regular_file(p)) {
 			if (p.has_extension()) {
 				std::string extension = p.extension().string();
-				if (extension == ".jpg") {
+				if (extension == ".bmp") {
 					std::string filename = p.filename().string();
 					//remove extension
 					size_t lastDotIndex = filename.find_last_of('.');
 					filename = filename.substr(0, lastDotIndex);
 					int frameNumber = boost::lexical_cast<int>(filename);
-					cv::Mat image = cv::imread(p.string());
+					cv::Mat image = cv::imread(p.string(), CV_LOAD_IMAGE_GRAYSCALE);
 					frames.insert(std::pair<int, cv::Mat>(frameNumber, image));
 				} else if (extension == ".csv") {
 					steeringAngleFilePath = p.string();
@@ -83,8 +83,95 @@ int main() {
 		steeringAngles.insert(std::pair<int, double>(number, steeringAngle));
 	}
 
-	cv::neura
+	int attributes_per_sample = 64 * 32; //size of one image
+	int number_of_training_samples = 10000; //number of images
+	int number_of_classes = 31; //size of output vector for steering direction
+	int hidden_layer_size = 5; //size of the hidden layer of neurons
 
+	cv::Mat training_data = cv::Mat(number_of_training_samples, attributes_per_sample, CV_32FC1);
+	cv::Mat training_classifications = cv::Mat(number_of_training_samples, number_of_classes, CV_32FC1, 0.0);
+
+	for (int i = 0; i < number_of_training_samples; i++) {
+		int classNumber = (int)steeringAngles[i + 1];
+		classNumber = std::min(classNumber, ((number_of_classes -1)/2));
+		classNumber = std::max(classNumber, -((number_of_classes - 1) / 2));
+		classNumber += ((number_of_classes - 1) / 2);
+		training_classifications.at<float>(i, classNumber) = 1.0;
+
+		//cv::Rect region(0, i, number_of_classes, 1);
+		//cv::GaussianBlur(training_classifications(region), training_classifications(region), cv::Size(31, 1), 2.0, 2.0, cv::BORDER_CONSTANT);
+	}
+	
+	//training_classifications *= 5; //normalize the image to 1;
+
+	//for (int i = 0; i < number_of_training_samples; i++) {
+	//	int classNumber;
+	//	if (steeringAngles[i] > 3.0) {
+	//		classNumber = 2;
+	//	} else if (steeringAngles[i] < -3.0) {
+	//		classNumber = 0;
+	//	} else {
+	//		classNumber = 1;
+	//	}
+	//	training_classifications.at<float>(i, classNumber) = 1.0;
+	//}
+
+	for (int i = 0; i < number_of_training_samples; i++) {
+		cv::Mat imageFloat;
+		frames[i + 1].convertTo(imageFloat, CV_32FC1, (1 / 255.0));
+		cv::Mat row = imageFloat.reshape(1, 1);
+
+		row.copyTo(training_data(cv::Rect(0, i, row.cols, row.rows)));
+	}
+
+	std::vector<int> layerSizes = { attributes_per_sample, hidden_layer_size, number_of_classes };
+
+
+	cv::Ptr<cv::ml::ANN_MLP> ann = cv::ml::ANN_MLP::create();
+
+	ann->setLayerSizes(layerSizes);
+	ann->setActivationFunction(cv::ml::ANN_MLP::SIGMOID_SYM);
+	cv::Ptr<cv::ml::TrainData> trainData = cv::ml::TrainData::create(training_data, cv::ml::SampleTypes::ROW_SAMPLE, training_classifications);
+	trainData->setTrainTestSplitRatio(0.95);
+	cv::TermCriteria termCriteria;
+	
+	termCriteria.maxCount = 1;
+	termCriteria.epsilon = 10000;
+	termCriteria.type = cv::TermCriteria::EPS + cv::TermCriteria::COUNT;
+	ann->setTermCriteria(termCriteria);
+	ann->setTrainMethod(cv::ml::ANN_MLP::RPROP);
+
+	std::cout << "Starting to train network..." << std::endl;
+	ann->train(trainData);
+	cv::Mat out;
+	cv::Mat idx;
+	try {
+		float error = ann->calcError(trainData, true, out);
+		idx = trainData->getTestSampleIdx();
+		std::cout << error << std::endl;
+	} catch (std::exception e) {
+		std::string w = e.what();
+		std::cout << w << std::endl;
+	}
+	cv::namedWindow("image", cv::WINDOW_FREERATIO);
+	for (int i = 0; i < idx.cols; i++) {
+		int frameNr = idx.at<int>(0, i);
+		int result = out.at<float>(i, 0);
+		cv::Mat image = frames[frameNr + 1];
+		std::cout << "\r";
+		for (int c = 0; c < result; c++)
+		{
+			std::cout << "-";
+		}
+		std::cout << "*";
+		for (int c = result+1; c < number_of_classes; c++)
+		{
+			std::cout << "-";
+		}
+		cv::imshow("image", image);
+		cv::waitKey(-1);
+	}
+	
 	return 0;
 }
 
