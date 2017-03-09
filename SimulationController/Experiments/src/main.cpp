@@ -149,7 +149,7 @@ int main() {
 	int attributes_per_sample = 64 * 32; //size of one image
 	int number_of_training_samples = maxImages; //number of images
 	int number_of_classes = 1; //size of output vector for steering direction
-	int hidden_layer_size = 10; //size of the hidden layer of neurons
+	int hidden_layer_size = 15; //size of the hidden layer of neurons
 
 	cv::Mat training_data = cv::Mat(number_of_training_samples, attributes_per_sample, CV_32FC1);
 	cv::Mat training_classifications = cv::Mat(number_of_training_samples, number_of_classes, CV_32FC1, 0.0);
@@ -216,7 +216,7 @@ int main() {
 		row.copyTo(training_data(cv::Rect(0, i, row.cols, row.rows)));
 	}
 	std::cout << "\n";
-	std::vector<int> layerSizes = { attributes_per_sample, hidden_layer_size, number_of_classes };
+	std::vector<int> layerSizes = { attributes_per_sample, 100, hidden_layer_size, number_of_classes };
 
 
 	cv::Ptr<cv::ml::ANN_MLP> ann = cv::ml::ANN_MLP::create();
@@ -229,19 +229,21 @@ int main() {
 	
 	//termCriteria.maxCount = 400;
 	//termCriteria.epsilon = 0.00001f;
-	termCriteria.maxCount = 5000;
-	termCriteria.epsilon = 0.000001f;
-	termCriteria.type = cv::TermCriteria::EPS | cv::TermCriteria::COUNT;
+	termCriteria.maxCount = 50000;
+	termCriteria.epsilon = 0.00001f;
+	termCriteria.type = cv::TermCriteria::EPS;
 	ann->setTermCriteria(termCriteria);
 	ann->setTrainMethod(cv::ml::ANN_MLP::BACKPROP);
-	ann->setBackpropMomentumScale(0);
-	ann->setBackpropWeightScale(0.011);
+	ann->setBackpropMomentumScale(0.000001);
+	ann->setBackpropWeightScale(0.015);
 
 	std::cout << "Training neural network..." << std::endl;
-	ann->train(trainData);
+	int doneIterations = ann->train(trainData);
+	cv::Mat useless;
+	float uselessError = ann->calcError(trainData, true, useless);
 	cv::Mat out;
 	cv::Mat idx;
-	std::cout << "Training done." << std::endl;
+	std::cout << "Training done with " << doneIterations << " iterations. Error = " << uselessError << std::endl;
 	cv::Mat1i testSamples = trainData->getTestSampleIdx();
 	cv::Mat samples = trainData->getSamples();
 	cv::Mat results;
@@ -255,11 +257,11 @@ int main() {
 		int frameNr = sampleNr + 1;
 		float result = results.at<float>(cv::Point(0, sampleNr));
 		float soll = training_classifications.at<float>(cv::Point(0, sampleNr));
-		std::cout << boost::format("%6.2f") % soll << " - " << boost::format("%6.2f") % result << " = " << boost::format("%6.2f") % (soll-result) << "\n" ;
+		//std::cout << boost::format("%6.2f") % soll << " - " << boost::format("%6.2f") % result << " = " << boost::format("%6.2f") % (soll-result) << "\n" ;
 		sumOfSquares += ((soll - result)*(soll - result));
 		cv::Mat image = frames[frameNr];
-		cv::imshow("image", image);
-		cv::waitKey(1);
+		//cv::imshow("image", image);
+		//cv::waitKey(1);
 	}
 	double rms = std::sqrt(sumOfSquares / testSamples.cols);
 	std::cout << "Total Error on Test Set (RMS): " << rms;
