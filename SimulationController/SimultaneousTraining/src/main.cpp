@@ -5,9 +5,11 @@
 #include <boost/array.hpp>
 #include <boost/asio/streambuf.hpp>
 #include <boost/asio.hpp>
+#include <boost/format.hpp>
 
 #include <boost/algorithm/string.hpp>
 #include <boost/lexical_cast.hpp>
+#include <boost/atomic.hpp>
 
 #include <vector>
 #include <string>
@@ -39,15 +41,37 @@ struct VehicleInput {
 	float throttle; //between 0 and 1
 	float brake;	 //between 0 and 1
 	float steering; //between -1 and +1
-	
+
 	string toString() {
 		//converts this struct to a string
 		//example: "0.3;0.0;-0.89"
 		std::stringstream strstream;
+		//std::string retval;
+		//retval = (boost::format("%1.2f;%1.2f;%1.2f")
+		//	% throttle
+		//	% brake
+		//	% steering).str();
+
+		//return retval;
+		std::stringstream steeringStream;
+		std::string steeringString;
+		steeringStream << steering;
+		steeringString = steeringStream.str();
+		if (steering == 0) {
+			steeringString = "0.0";
+		}
+		if (steering == -1) {
+			steeringString = "-1.0";
+		}
+		if (steering == 1) {
+			steeringString = "1.0";
+		}
+
+		
 		strstream
 			<< throttle << ";"
 			<< brake << ";"
-			<< steering;
+			<< steeringString;
 
 		return strstream.str();
 	}
@@ -57,7 +81,7 @@ struct VehicleInput {
 		if (fields.size() != 3) {
 			return;
 		}
-		throttle = boost::lexical_cast<float,string>(fields[0]);
+		throttle = boost::lexical_cast<float, string>(fields[0]);
 		brake = boost::lexical_cast<float, string>(fields[1]);
 		steering = boost::lexical_cast<float, string>(fields[2]);
 
@@ -66,7 +90,7 @@ struct VehicleInput {
 };
 
 //decodes 4 byte little endian encoded byte array to unsigned 32 bit integer
-uint32_t decode(unsigned char* bytes) { 
+uint32_t decode(unsigned char* bytes) {
 
 	uint32_t retval = bytes[0] + (bytes[1] << 8) + (bytes[2] << 16) + (bytes[3] << 24);
 	return retval;
@@ -146,7 +170,8 @@ public:
 
 			try {
 				received = imageSocket->receive(boost::asio::buffer(recv_buf));
-			} catch (boost::system::system_error e) {
+			}
+			catch (boost::system::system_error e) {
 				imageSocket->close();
 				imageSocket = 0;
 				return false;
@@ -162,7 +187,8 @@ public:
 		}
 		try {
 			imageSocket->send(boost::asio::buffer("ack"));
-		} catch (boost::system::system_error e) {
+		}
+		catch (boost::system::system_error e) {
 			std::cout << e.what() << std::endl;
 
 		}
@@ -177,7 +203,8 @@ public:
 				try {
 					//received += imageSocket->receive(boost::asio::buffer(recv_buf));
 					received += imageSocket->read_some(bufs);
-				} catch (boost::system::system_error e) {
+				}
+				catch (boost::system::system_error e) {
 					imageSocket->close();
 					imageSocket = 0;
 					return false;
@@ -189,13 +216,14 @@ public:
 
 			try {
 				imageSocket->send(boost::asio::buffer("ack"));
-			} catch(boost::system::system_error e) {
+			}
+			catch (boost::system::system_error e) {
 				std::cout << e.what() << std::endl;
 			}
 			if (received > 0) {
 
 				if (width > 0 && height > 0) {
-					
+
 					cv::Mat img(height, width, CV_8UC4, (void*)boost::asio::buffer_cast<const void*>(buffer.data()));
 					cv::cvtColor(img, img, CV_BGRA2RGBA);
 					//cv::imshow("img", img);
@@ -229,30 +257,107 @@ private:
 	bool connected;
 };
 
+boost::atomic<double> steeringBarValue;
+struct SampleImage {
+	std::string filePath;
+	cv::Mat image;
 
+	SampleImage(const cv::Mat &image_, const std::string &filePath_) {
+		filePath = filePath_;
+		image = image_.clone();
+	}
+};
 class ImageProcessing {
 private:
 	cv::Ptr<cv::ml::ANN_MLP> ann;
+	cv::Mat inputs;
+	cv::Mat samples;
+	int i;
+	std::vector<SampleImage> sampleVector;
 public:
 	ImageProcessing() {
-		ann = cv::Algorithm::load<cv::ml::ANN_MLP>("C:\\ptemp\\trainedNetwork.ann");
-		bool trained = ann->isTrained();
-		//ann->load<cv::ml::ANN_MLP>("C:\\Temp\\trainedNetwork.ann");
+		int attributes_per_sample = 64 * 32; //size of one image
+		int hidden_layer_size = 15; //size of the hidden layer of neurons
+		int number_of_classes = 1; //size of output vector for steering direction
+		std::vector<int> layerSizes = { attributes_per_sample, 100, hidden_layer_size, 3, number_of_classes };
+		i = 0;
+		ann = cv::ml::ANN_MLP::create();
+		ann->setLayerSizes(layerSizes);
+		ann->setActivationFunction(cv::ml::ANN_MLP::SIGMOID_SYM);
+		cv::TermCriteria termCriteria;
+		termCriteria.maxCount = 100;
+		termCriteria.epsilon = 0.00001f;
+		termCriteria.type = cv::TermCriteria::MAX_ITER;
+		ann->setTermCriteria(termCriteria);
+		ann->setTrainMethod(cv::ml::ANN_MLP::BACKPROP);
+		ann->setBackpropMomentumScale(0.0001);
+		ann->setBackpropWeightScale(0.02);
+
+		sampleVector.clear();
+		sampleVector.reserve(100);
 	}
 
 	double processImage(const cv::Mat& image) {
-		cv::Mat imageFloat;
-		cv::Mat currentImage;
-		cv::imshow("image", image);
-		cv::waitKey(1);
-		cv::Mat grayImage;
-		cv::cvtColor(image, grayImage, CV_RGBA2GRAY);
-		cv::resize(grayImage, currentImage, cv::Size(64, 32));
-		cv::Mat equalizedImage;
-		cv::equalizeHist(currentImage, equalizedImage);
-		equalizedImage.convertTo(imageFloat, CV_32FC1, (1 / 128.0), -1.0);
-		cv::Mat row = imageFloat.reshape(1, 1);
-		cv::Mat output;
+
+		std::string filename;
+		std::string outDir = "C:\\ptemp\\trainingData2\\";
+		if (steeringBarValue >= 0) {
+			filename = (boost::format("%05d_+%1.9f.png") % i % steeringBarValue).str();
+		} else {
+			filename = (boost::format("%05d_-%1.9f.png") % i % (-steeringBarValue)).str();
+		}
+
+		std::string filePath = outDir + filename;
+
+		sampleVector.push_back(SampleImage(image, filePath));
+
+		if (sampleVector.size() >= 50) {
+			for (size_t d = 0; d < sampleVector.size(); d ++) {
+				cv::imwrite(sampleVector[d].filePath, sampleVector[d].image);
+			}
+			sampleVector.clear();
+			sampleVector.reserve(50);
+		}
+
+		i++;
+		//cv::Mat imageFloat;
+		//cv::Mat currentImage;
+		//cv::imshow("image", image);
+		//cv::waitKey(1);
+		//cv::Mat grayImage;
+		//cv::cvtColor(image, grayImage, CV_RGBA2GRAY);
+		//cv::resize(grayImage, currentImage, cv::Size(64, 32));
+		//cv::Mat equalizedImage;
+		//cv::equalizeHist(currentImage, equalizedImage);
+		//equalizedImage.convertTo(imageFloat, CV_32FC1, (1 / 128.0), -1.0);
+		//cv::Mat row = imageFloat.reshape(1, 1);
+		//cv::Mat training_classification = cv::Mat(1, 1, CV_32FC1, cv::Scalar(steeringBarValue));
+		//
+		//if (i == 0)
+		//{
+		//	inputs = cv::Mat(100, row.cols, CV_32FC1);
+		//	samples = cv::Mat(100, 1, CV_32FC1);
+		//}
+		//
+		//row.copyTo(inputs(cv::Rect(0, i, row.cols, row.rows)));
+		//training_classification.copyTo(samples(cv::Rect(0, i, training_classification.cols, training_classification.rows)));
+		//
+		//if (i == 99) {
+		//	cv::Ptr<cv::ml::TrainData> trainData = cv::ml::TrainData::create(inputs, cv::ml::SampleTypes::ROW_SAMPLE, samples);
+		//	ann->train(trainData);
+		//	cv::Mat out;
+		//	ann->predict(row, out);
+		//	double predictedVal = out.at<double>(0, 0);
+		//	std::cout << "predictedVal: " << predictedVal << "\n";
+		//	i = 0;
+		//}
+		//else
+		//{
+		//	i++;
+		//}
+
+
+		/*cv::Mat output;
 		try
 		{
 			ann->predict(row, output);
@@ -271,9 +376,14 @@ public:
 		}
 
 		std::cout << "\rprediction:" << angle << "       ";
-		return angle;
+		return angle;*/
+		return 0.0;
 	}
 };
+
+
+
+
 
 int main() {
 	//cv::Mat image = cv::imread("C:\\Temp\\example.png");
@@ -287,27 +397,36 @@ int main() {
 	std::cout << "remote steering port: ";
 	std::cin >> remoteSteeringPort;
 
+	
+	int valuePointer;
+	cv::namedWindow("steering wheel");
+	cv::createTrackbar("steering: ", "steering wheel", &valuePointer, 200, [](int pos, void* userdata) {
+		steeringBarValue = (pos - 100) / 100.0;
+	});
+
 	ImageProcessing virtualDriver;
 
 	VehicleInput vehicleInput;
 
 	ImageCallbackFunction imageCallback = [&](cv::Mat& image) {
 		double angle = virtualDriver.processImage(image);
-		vehicleInput.steering = angle;
+		//vehicleInput.steering = angle;
+		vehicleInput.steering = steeringBarValue;
 	};
 
 
 	Interface blenderInterface(imageCallback);
-	
+
 
 	std::string remoteIP = "127.0.0.1";
 
-	cout << "Trying to connect to " << remoteIP << ":" << remoteSteeringPort << " and " << remoteImagePort <<"... "<< endl;
+	cout << "Trying to connect to " << remoteIP << ":" << remoteSteeringPort << " and " << remoteImagePort << "... " << endl;
 	while (true) {
 
 		if (!blenderInterface.Connect(remoteIP, remoteSteeringPort, remoteImagePort)) {
 			std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-		} else {
+		}
+		else {
 			break;
 		}
 	}
@@ -328,13 +447,13 @@ int main() {
 
 	while (true) {
 		int key = cv::waitKey(2);
-		vehicleInput.throttle = 0.3;
+		vehicleInput.throttle = 1;
 		switch (key) {
-		case 'w': 
+		case 'w':
 			vehicleInput.throttle += 0.3;
 			vehicleInput.brake = 0.0;
 			break;
-		case 's': 
+		case 's':
 			vehicleInput.brake += 0.5;
 			vehicleInput.throttle = 0.0;
 			break;
@@ -347,6 +466,9 @@ int main() {
 		case ' ':
 			vehicleInput.throttle = 0.0;
 			vehicleInput.brake = 0.0;
+		case 'p':
+			std::cout << "Pause... Press any key to continue" << std::endl;
+			std::getchar();
 		default:
 			break;
 		}

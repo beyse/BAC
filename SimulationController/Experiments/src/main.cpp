@@ -99,7 +99,7 @@ int main() {
 	fs::directory_iterator it(targetDir), eod;
 	std::string steeringAngleFilePath = "";
 
-	int maxImages = 10000;
+	int maxImages = 100;
 	bool maxReached = false;
 	BOOST_FOREACH(fs::path const &p, std::make_pair(it, eod)) {
 		if (fs::is_regular_file(p)) {
@@ -216,7 +216,7 @@ int main() {
 		row.copyTo(training_data(cv::Rect(0, i, row.cols, row.rows)));
 	}
 	std::cout << "\n";
-	std::vector<int> layerSizes = { attributes_per_sample, 100, hidden_layer_size, number_of_classes };
+	std::vector<int> layerSizes = { attributes_per_sample, 100, hidden_layer_size, 3, number_of_classes };
 
 
 	cv::Ptr<cv::ml::ANN_MLP> ann = cv::ml::ANN_MLP::create();
@@ -234,11 +234,12 @@ int main() {
 	termCriteria.type = cv::TermCriteria::EPS;
 	ann->setTermCriteria(termCriteria);
 	ann->setTrainMethod(cv::ml::ANN_MLP::BACKPROP);
-	ann->setBackpropMomentumScale(0.000001);
-	ann->setBackpropWeightScale(0.015);
+	ann->setBackpropMomentumScale(0.0001);
+	ann->setBackpropWeightScale(0.02);
 
 	std::cout << "Training neural network..." << std::endl;
 	int doneIterations = ann->train(trainData);
+	ann->save("C:\\Temp\\badlyTrainedNetwork.ann");
 	cv::Mat useless;
 	float uselessError = ann->calcError(trainData, true, useless);
 	cv::Mat out;
@@ -266,22 +267,22 @@ int main() {
 	double rms = std::sqrt(sumOfSquares / testSamples.cols);
 	std::cout << "Total Error on Test Set (RMS): " << rms;
 
-	//for (int i = 0; i < number_of_training_samples; i++) {
-	//	int sampleNr = i;
-	//	int frameNr = sampleNr + 1;
-	//	float result = results.at<float>(cv::Point(0, sampleNr));
-	//	float soll = training_classifications.at<float>(cv::Point(0, sampleNr));
-	//	std::cout << boost::format("%6.2f") % soll << " - " << boost::format("%6.2f") % result << " = " << boost::format("%6.2f") % (soll - result) << "\n";
-	//	sumOfSquares += ((soll - result)*(soll - result));
+	for (int i = 0; i < number_of_training_samples; i++) {
+		int sampleNr = i;
+		int frameNr = sampleNr + 1;
+		float result = results.at<float>(cv::Point(0, sampleNr));
+		float soll = training_classifications.at<float>(cv::Point(0, sampleNr));
+		std::cout << boost::format("%6.2f") % soll << " - " << boost::format("%6.2f") % result << " = " << boost::format("%6.2f") % (soll - result) << "\n";
+		sumOfSquares += ((soll - result)*(soll - result));
 
-	//	draw(result, soll);
-	//	
-	//	cv::Mat image = frames[frameNr];
-	//	cv::imshow("image", image);
-	//	cv::waitKey(-1);
-	//}
-	//double rms = std::sqrt(sumOfSquares / testSamples.cols);
-	//std::cout << "Total Error on Test Set (RMS): " << rms;
+		draw(result, soll);
+		
+		cv::Mat image = frames[frameNr];
+		cv::imshow("image", image);
+		cv::waitKey(-1);
+	}
+	rms = std::sqrt(sumOfSquares / testSamples.cols);
+	std::cout << "Total Error on Test Set (RMS): " << rms;
 
 	std::getchar();
 	/*try {
