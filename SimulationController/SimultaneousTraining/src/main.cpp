@@ -10,6 +10,7 @@
 #include <boost/algorithm/string.hpp>
 #include <boost/lexical_cast.hpp>
 #include <boost/atomic.hpp>
+#include <boost/filesystem.hpp>
 
 #include <vector>
 #include <string>
@@ -23,6 +24,8 @@
 #include <thread>
 #include <mutex>
 #include <functional>
+
+#include "pid.h"
 
 using boost::asio::ip::tcp;
 
@@ -274,6 +277,11 @@ private:
 	cv::Mat samples;
 	int i;
 	std::vector<SampleImage> sampleVector;
+	std::string outDir;
+	cv::Mat transformationMatrix;
+	int sollwert;
+	PID pidController;
+
 public:
 	ImageProcessing() {
 		int attributes_per_sample = 64 * 32; //size of one image
@@ -295,12 +303,23 @@ public:
 
 		sampleVector.clear();
 		sampleVector.reserve(100);
+
+		outDir = "C:\\ptemp\\trainingData4\\";
+		namespace fs = boost::filesystem;
+
+		if (!fs::exists(fs::path(outDir))) {
+			fs::create_directory(fs::path(outDir));
+		}
+
+		cv::FileStorage fileStorage("C:\\ptemp\\transform.yml", cv::FileStorage::READ);
+		fileStorage["transformationMatrix"] >> transformationMatrix;
+		sollwert = -1;
+		pidController = PID(0.05, 1.0, -1.0, 0.2, 0.0, 0.0);
 	}
 
 	double processImage(const cv::Mat& image) {
 
 		std::string filename;
-		std::string outDir = "C:\\ptemp\\trainingData2\\";
 		if (steeringBarValue >= 0) {
 			filename = (boost::format("%05d_+%1.9f.png") % i % steeringBarValue).str();
 		} else {
@@ -319,7 +338,66 @@ public:
 			sampleVector.reserve(50);
 		}
 
+		cv::Mat orthoImage;
+		cv::Mat grayImage;
+		try {
+			cv::cvtColor(image, grayImage, CV_BGRA2GRAY);
+			cv::warpPerspective(grayImage, orthoImage, transformationMatrix, cv::Size(1000, 1000), CV_INTER_NN);
+		}
+		catch (cv::Exception e) {
+			std::string what = e.what();
+			std::cout << what;
+			return 0.0;
+		}
+		cv::Mat binOrtho;
+		int windowSize = 501;
+		double C = -100;
+		cv::adaptiveThreshold(orthoImage, binOrtho, 255.0, CV_ADAPTIVE_THRESH_MEAN_C, CV_THRESH_BINARY, windowSize, C);
+		cv::Mat LOI1 = binOrtho(cv::Rect(cv::Point(0, 710), cv::Point(999, 710 + 1)));
+		cv::Mat LOI2 = binOrtho(cv::Rect(cv::Point(0, 677), cv::Point(999, 677 + 1)));
+		cv::Mat LOI3 = binOrtho(cv::Rect(cv::Point(0, 644), cv::Point(999, 644 + 1)));
+		cv::Mat LOI4 = binOrtho(cv::Rect(cv::Point(0, 611), cv::Point(999, 611 + 1)));
+		cv::Mat LOI5 = binOrtho(cv::Rect(cv::Point(0, 580), cv::Point(999, 580 + 1)));
+		cv::Mat1b LOI = LOI1 | LOI2 | LOI3 | LOI4 | LOI5;
+		cv::Mat colorImage;
+		cv::cvtColor(binOrtho, colorImage, CV_GRAY2BGR);
+		cv::line(colorImage, cv::Point(0, 710), cv::Point(999, 710), cv::Scalar(0, 0, 255));
+		cv::line(colorImage, cv::Point(0, 677), cv::Point(999, 677), cv::Scalar(0, 0, 255));
+		cv::line(colorImage, cv::Point(0, 644), cv::Point(999, 644), cv::Scalar(0, 0, 255));
+		cv::line(colorImage, cv::Point(0, 611), cv::Point(999, 611), cv::Scalar(0, 0, 255));
+		cv::line(colorImage, cv::Point(0, 580), cv::Point(999, 580), cv::Scalar(0, 0, 255));
+
+		int leftEdge = -1;
+		int rightEdge;
+
+		for (int x = LOI.cols - 1; x >= 0; x--) {
+			if (LOI(cv::Point(x, 0)) == 255) {
+				rightEdge = x;
+				break;
+			}
+		}
+
+		for (int x = rightEdge - 150; x >= 0; x--) {
+			if (LOI(cv::Point(x, 0)) == 255) {
+				leftEdge = x;
+				break;
+			}
+		}
+
+		int middle = (int)std::round((rightEdge - leftEdge) / 2.0) + leftEdge;
+		cv::line(colorImage, cv::Point(middle, 600), cv::Point(middle, 710), cv::Scalar(0, 255, 255));
+		double output = 0.0;
+		if (sollwert == -1) {
+			sollwert = middle;
+		} else {
+			double processValue = 0.05*(sollwert-middle);
+			output = pidController.calculate(0.0, processValue);
+			std::cout << output << std::endl;
+		}
+		cv::imshow("orthoImage", colorImage);
+		cv::waitKey(1);
 		i++;
+		return output;
 		//cv::Mat imageFloat;
 		//cv::Mat currentImage;
 		//cv::imshow("image", image);
@@ -386,6 +464,50 @@ public:
 
 
 int main() {
+
+	//cv::Mat transformationMatrix;
+	//cv::FileStorage fileStorage("C:\\ptemp\\transform.yml", cv::FileStorage::READ);
+	//fileStorage["transformationMatrix"] >> transformationMatrix;
+
+	//cv::Mat image = cv::imread("C:\\ptemp\\trainingData4\\00460_+0.070000000.png", CV_LOAD_IMAGE_GRAYSCALE);
+
+	//cv::Mat orthoImage;
+	//cv::warpPerspective(image, orthoImage, transformationMatrix, cv::Size(1000, 1000), CV_INTER_NN);
+	//cv::imshow("orthoImage", orthoImage);
+	//cv::Mat binOrtho;
+	//int windowSize = 501;
+	//double C = -100;
+	//cv::adaptiveThreshold(orthoImage, binOrtho, 255.0, CV_ADAPTIVE_THRESH_MEAN_C, CV_THRESH_BINARY, windowSize, C);
+	//cv::Mat LOI1 = binOrtho(cv::Rect(cv::Point(363, 686), cv::Point(737, 686+1)));
+	//cv::Mat LOI2 = binOrtho(cv::Rect(cv::Point(363, 600), cv::Point(737, 600+1)));
+	//cv::Mat1b LOI = LOI1 | LOI2;
+	//cv::Mat colorImage;
+	//cv::cvtColor(binOrtho, colorImage, CV_GRAY2BGR);
+	//cv::line(colorImage, cv::Point(363, 686), cv::Point(737, 686), cv::Scalar(0, 0, 255));
+	//cv::line(colorImage, cv::Point(363, 600), cv::Point(737, 600), cv::Scalar(0, 0, 255));
+	//
+	//int leftEdge;
+	//int rightEdge;
+
+	//for (int x = 0; x < LOI.cols; x++) {
+	//	if (LOI(cv::Point(x, 0)) == 255) {
+	//		leftEdge = x;
+	//		break;
+	//	}
+	//}
+	//for (int x = LOI.cols - 1; x >= 0; x--) {
+	//	if (LOI(cv::Point(x,0)) == 255) {
+	//		rightEdge = x;
+	//		break;
+	//	}
+	//}
+	//int middle = (int)std::round((rightEdge - leftEdge) / 2.0) + leftEdge;
+	//cv::line(colorImage, cv::Point(middle + 363, 600), cv::Point(middle+363, 686), cv::Scalar(0, 255, 255));
+
+
+	//cv::waitKey(1);
+
+
 	//cv::Mat image = cv::imread("C:\\Temp\\example.png");
 	//return 0;
 
@@ -398,7 +520,8 @@ int main() {
 	std::cin >> remoteSteeringPort;
 
 	
-	int valuePointer;
+	int valuePointer = 100;
+
 	cv::namedWindow("steering wheel");
 	cv::createTrackbar("steering: ", "steering wheel", &valuePointer, 200, [](int pos, void* userdata) {
 		steeringBarValue = (pos - 100) / 100.0;
@@ -410,8 +533,8 @@ int main() {
 
 	ImageCallbackFunction imageCallback = [&](cv::Mat& image) {
 		double angle = virtualDriver.processImage(image);
-		//vehicleInput.steering = angle;
-		vehicleInput.steering = steeringBarValue;
+		vehicleInput.steering = angle;
+		//vehicleInput.steering = steeringBarValue;
 	};
 
 

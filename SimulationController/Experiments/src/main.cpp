@@ -17,7 +17,9 @@
 #include <iostream>
 #include <sstream>
 
+
 #include <opencv2/ml/ml.hpp>
+#include <opencv2/opencv.hpp>
 
 using namespace std;
 namespace fs = boost::filesystem;
@@ -87,7 +89,7 @@ void draw(float ist, float soll) {
 	std::cout << "\n";
 }
 
-int main() {
+int main2() {
 
 	std::string groundTruthDir = "C:\\Users\\Sebastian\\Desktop\\BAC\\GT-30-10-16";
 	std::map<int /*frame number*/, cv::Mat> frames;
@@ -95,7 +97,7 @@ int main() {
 	
 
 	//iterator over all files in directory
-	fs::path targetDir(groundTruthDir.c_str());
+	fs::path targetDir(groundTruthDir.c_str()); 
 	fs::directory_iterator it(targetDir), eod;
 	std::string steeringAngleFilePath = "";
 
@@ -326,3 +328,72 @@ int main() {
 	return 0;
 }
 
+int main() {
+	
+	//load the distorted image that shows a street and a calibration-chessboard "C:\ptemp\trainingData4\00268_+0.010000000.png"
+	cv::Mat distortedImage = cv::imread("C:\\ptemp\\trainingData4\\00268_+0.010000000.png", CV_LOAD_IMAGE_GRAYSCALE);
+	//cv::Mat distortedImage = cv::imread("C:\\Users\\Sebastian\\Desktop\\BAC\\small_calib_image.png", CV_LOAD_IMAGE_GRAYSCALE);
+	std::vector<cv::Point2d> distortedPoints;
+	cv::Size chessboardSize = cv::Size(7, 7);
+	//bool patternFound = cv::findChessboardCorners(distortedImage, chessboardSize, distortedPoints, CV_CALIB_CB_ADAPTIVE_THRESH);
+	//cv::Mat colorImage;
+	//cv::cvtColor(distortedImage, colorImage, CV_GRAY2BGR);
+	////cv::drawChessboardCorners(colorImage, chessboardSize, distortedPoints, true);
+	//for (int i = 0; i < distortedPoints.size(); i++) {
+	//	double weight = (double)i / (double)(distortedPoints.size()-1);
+	//	cv::circle(colorImage, distortedPoints[i], 5, cv::Scalar(0, weight*255, (1-weight)*255));
+	//}
+
+	distortedPoints.push_back(cv::Point( 53, 120));
+	distortedPoints.push_back(cv::Point( 88, 56));
+	distortedPoints.push_back(cv::Point(170, 56));
+	distortedPoints.push_back(cv::Point(205, 120));
+
+
+	std::vector<cv::Point2d> undistoredPoints;
+	undistoredPoints.push_back(cv::Point(400, 800));
+	undistoredPoints.push_back(cv::Point(400, 600));
+	undistoredPoints.push_back(cv::Point(600, 600));
+	undistoredPoints.push_back(cv::Point(600, 800));
+
+
+	
+	//
+	//for (int x = 1; x <= 7; x++) {
+	//	for (int y = 7; y >= 1; y--) {
+	//		undistoredPoints.push_back(cv::Point((x*100)+10000, (y*100)+19000));
+	//	}
+	//}
+
+	//for (int i = 0; i < undistoredPoints.size(); i++) {
+	//	double weight = (double)i / (double)(undistoredPoints.size() - 1);
+	//	cv::circle(colorImage, undistoredPoints[i], 5, cv::Scalar(0, weight * 255, (1 - weight) * 255), -1);
+	//}
+
+
+	cv::Mat H;
+	cv::Mat ortoImage;
+	try {
+		//T = cv::getPerspectiveTransform(distortedPoints, undistoredPoints);
+		cv::Mat outMask;
+		H = cv::findHomography(distortedPoints, undistoredPoints, outMask);
+
+		cv::FileStorage fs("C:\\ptemp\\transform.yml", cv::FileStorage::WRITE);
+
+		time_t rawtime; time(&rawtime);
+		fs << "calibrationDate" << asctime(localtime(&rawtime));
+		fs << "transformationMatrix" << H;
+		fs.release();
+		cv::warpPerspective(distortedImage, ortoImage, H, cv::Size(1000,1000), CV_INTER_LANCZOS4);
+		cv::Mat img = cv::imread("C:\\ptemp\\trainingData3\\00049_+0.100000000.png", CV_LOAD_IMAGE_GRAYSCALE);
+		cv::warpPerspective(img, ortoImage, H, cv::Size(1000, 1000));
+		//cv::warpAffine(distortedImage, ortoImage, H.inv(), distortedImage.size());
+	}
+	catch (cv::Exception e) {
+		std::string what = e.what();
+		std::cout << what;
+	}
+
+
+	return 0;
+}
