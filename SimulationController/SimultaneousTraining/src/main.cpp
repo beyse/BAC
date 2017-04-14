@@ -15,6 +15,7 @@
 #include <vector>
 #include <string>
 #include <memory>
+#include <queue>
 
 #include <opencv2\opencv.hpp>
 #include <opencv2\ml.hpp>
@@ -276,6 +277,8 @@ private:
 	cv::Mat inputs;
 	cv::Mat samples;
 	int i;
+	int j;
+	int k;
 	std::vector<SampleImage> sampleVector;
 	std::string outDir;
 	cv::Mat transformationMatrix;
@@ -287,8 +290,10 @@ public:
 		int attributes_per_sample = 64 * 32; //size of one image
 		int hidden_layer_size = 15; //size of the hidden layer of neurons
 		int number_of_classes = 1; //size of output vector for steering direction
-		std::vector<int> layerSizes = { attributes_per_sample, 100, hidden_layer_size, 3, number_of_classes };
+		std::vector<int> layerSizes = { attributes_per_sample, 100, hidden_layer_size, number_of_classes };
 		i = 0;
+		j = 0;
+		k = 0;
 		ann = cv::ml::ANN_MLP::create();
 		ann->setLayerSizes(layerSizes);
 		ann->setActivationFunction(cv::ml::ANN_MLP::SIGMOID_SYM);
@@ -300,11 +305,10 @@ public:
 		ann->setTrainMethod(cv::ml::ANN_MLP::BACKPROP);
 		ann->setBackpropMomentumScale(0.0001);
 		ann->setBackpropWeightScale(0.02);
-
 		sampleVector.clear();
 		sampleVector.reserve(100);
 
-		outDir = "C:\\ptemp\\trainingData4\\";
+		outDir = "C:\\ptemp\\trainingData11\\";
 		namespace fs = boost::filesystem;
 
 		if (!fs::exists(fs::path(outDir))) {
@@ -319,11 +323,39 @@ public:
 
 	double processImage(const cv::Mat& image) {
 
+		cv::Mat orthoImage;
+		double output = steeringByController(image, orthoImage);
+		accumulateAndSaveImage(image, output);
+		cv::Mat trainImage;
+		double outputNetwork = 0.0;
+		//outputNetwork = trainNetwork(image, output, trainImage);
+		//cv::imshow("training result", trainImage);
+		cv::imshow("orthoImage", orthoImage);
+		cv::waitKey(1);
+
+		if (steeringBarValue > 0.5) {
+			std::cout << "drving with network power" << std::endl;
+			return outputNetwork;
+		}
+
+		if (steeringBarValue < -0.5) {
+			ann->save(outDir + "\\trainedNetwork.ann");
+			std::cout << "saved network to: " + outDir + "\\trainedNetwork.ann" << std::endl;
+		}
+
+
+		return output;
+	}
+
+	private:
+		void accumulateAndSaveImage(cv::Mat image, double steering) {
+			
 		std::string filename;
-		if (steeringBarValue >= 0) {
-			filename = (boost::format("%05d_+%1.9f.png") % i % steeringBarValue).str();
-		} else {
-			filename = (boost::format("%05d_-%1.9f.png") % i % (-steeringBarValue)).str();
+		if (steering >= 0) {
+			filename = (boost::format("%05d_+%1.9f.png") % i % steering).str();
+		}
+		else {
+			filename = (boost::format("%05d_-%1.9f.png") % i % (-steering)).str();
 		}
 
 		std::string filePath = outDir + filename;
@@ -331,132 +363,159 @@ public:
 		sampleVector.push_back(SampleImage(image, filePath));
 
 		if (sampleVector.size() >= 50) {
-			for (size_t d = 0; d < sampleVector.size(); d ++) {
+			for (size_t d = 0; d < sampleVector.size(); d++) {
 				cv::imwrite(sampleVector[d].filePath, sampleVector[d].image);
 			}
 			sampleVector.clear();
 			sampleVector.reserve(50);
 		}
 
-		cv::Mat orthoImage;
-		cv::Mat grayImage;
-		try {
-			cv::cvtColor(image, grayImage, CV_BGRA2GRAY);
-			cv::warpPerspective(grayImage, orthoImage, transformationMatrix, cv::Size(1000, 1000), CV_INTER_NN);
-		}
-		catch (cv::Exception e) {
-			std::string what = e.what();
-			std::cout << what;
-			return 0.0;
-		}
-		cv::Mat binOrtho;
-		int windowSize = 501;
-		double C = -100;
-		cv::adaptiveThreshold(orthoImage, binOrtho, 255.0, CV_ADAPTIVE_THRESH_MEAN_C, CV_THRESH_BINARY, windowSize, C);
-		cv::Mat LOI1 = binOrtho(cv::Rect(cv::Point(0, 710), cv::Point(999, 710 + 1)));
-		cv::Mat LOI2 = binOrtho(cv::Rect(cv::Point(0, 677), cv::Point(999, 677 + 1)));
-		cv::Mat LOI3 = binOrtho(cv::Rect(cv::Point(0, 644), cv::Point(999, 644 + 1)));
-		cv::Mat LOI4 = binOrtho(cv::Rect(cv::Point(0, 611), cv::Point(999, 611 + 1)));
-		cv::Mat LOI5 = binOrtho(cv::Rect(cv::Point(0, 580), cv::Point(999, 580 + 1)));
-		cv::Mat1b LOI = LOI1 | LOI2 | LOI3 | LOI4 | LOI5;
-		cv::Mat colorImage;
-		cv::cvtColor(binOrtho, colorImage, CV_GRAY2BGR);
-		cv::line(colorImage, cv::Point(0, 710), cv::Point(999, 710), cv::Scalar(0, 0, 255));
-		cv::line(colorImage, cv::Point(0, 677), cv::Point(999, 677), cv::Scalar(0, 0, 255));
-		cv::line(colorImage, cv::Point(0, 644), cv::Point(999, 644), cv::Scalar(0, 0, 255));
-		cv::line(colorImage, cv::Point(0, 611), cv::Point(999, 611), cv::Scalar(0, 0, 255));
-		cv::line(colorImage, cv::Point(0, 580), cv::Point(999, 580), cv::Scalar(0, 0, 255));
-
-		int leftEdge = -1;
-		int rightEdge;
-
-		for (int x = LOI.cols - 1; x >= 0; x--) {
-			if (LOI(cv::Point(x, 0)) == 255) {
-				rightEdge = x;
-				break;
-			}
-		}
-
-		for (int x = rightEdge - 150; x >= 0; x--) {
-			if (LOI(cv::Point(x, 0)) == 255) {
-				leftEdge = x;
-				break;
-			}
-		}
-
-		int middle = (int)std::round((rightEdge - leftEdge) / 2.0) + leftEdge;
-		cv::line(colorImage, cv::Point(middle, 600), cv::Point(middle, 710), cv::Scalar(0, 255, 255));
-		double output = 0.0;
-		if (sollwert == -1) {
-			sollwert = middle;
-		} else {
-			double processValue = 0.05*(sollwert-middle);
-			output = pidController.calculate(0.0, processValue);
-			std::cout << output << std::endl;
-		}
-		cv::imshow("orthoImage", colorImage);
-		cv::waitKey(1);
 		i++;
-		return output;
-		//cv::Mat imageFloat;
-		//cv::Mat currentImage;
-		//cv::imshow("image", image);
-		//cv::waitKey(1);
-		//cv::Mat grayImage;
-		//cv::cvtColor(image, grayImage, CV_RGBA2GRAY);
-		//cv::resize(grayImage, currentImage, cv::Size(64, 32));
-		//cv::Mat equalizedImage;
-		//cv::equalizeHist(currentImage, equalizedImage);
-		//equalizedImage.convertTo(imageFloat, CV_32FC1, (1 / 128.0), -1.0);
-		//cv::Mat row = imageFloat.reshape(1, 1);
-		//cv::Mat training_classification = cv::Mat(1, 1, CV_32FC1, cv::Scalar(steeringBarValue));
-		//
-		//if (i == 0)
-		//{
-		//	inputs = cv::Mat(100, row.cols, CV_32FC1);
-		//	samples = cv::Mat(100, 1, CV_32FC1);
-		//}
-		//
-		//row.copyTo(inputs(cv::Rect(0, i, row.cols, row.rows)));
-		//training_classification.copyTo(samples(cv::Rect(0, i, training_classification.cols, training_classification.rows)));
-		//
-		//if (i == 99) {
-		//	cv::Ptr<cv::ml::TrainData> trainData = cv::ml::TrainData::create(inputs, cv::ml::SampleTypes::ROW_SAMPLE, samples);
-		//	ann->train(trainData);
-		//	cv::Mat out;
-		//	ann->predict(row, out);
-		//	double predictedVal = out.at<double>(0, 0);
-		//	std::cout << "predictedVal: " << predictedVal << "\n";
-		//	i = 0;
-		//}
-		//else
-		//{
-		//	i++;
-		//}
-
-
-		/*cv::Mat output;
-		try
-		{
-			ann->predict(row, output);
-		}
-		catch (cv::Exception e)
-		{
-			std::string w = e.what();
-			std::cout << e.what();
-		}
-		double angle = output.at<float>(0, 0);
-		if (angle >= 0) {
-			angle = std::pow(angle, 4);
-		}
-		else {
-			angle = -std::pow(-angle, 4);
-		}
-
-		std::cout << "\rprediction:" << angle << "       ";
-		return angle;*/
-		return 0.0;
 	}
+		double steeringByController(cv::Mat image, cv::Mat &outputImage) {
+			cv::Mat orthoImage;
+			cv::Mat grayImage;
+
+			try {
+				cv::cvtColor(image, grayImage, CV_BGRA2GRAY);
+				cv::warpPerspective(grayImage, orthoImage, transformationMatrix, cv::Size(1000, 1000), CV_INTER_NN);
+				//cv::imshow("original image", grayImage);
+			}
+			catch (cv::Exception e) {
+				std::string what = e.what();
+				std::cout << what;
+				return 0.0;
+			}
+			cv::Mat binOrtho;
+			int windowSize = 501;
+			double C = -100;
+			cv::adaptiveThreshold(orthoImage, binOrtho, 255.0, CV_ADAPTIVE_THRESH_MEAN_C, CV_THRESH_BINARY, windowSize, C);
+			cv::Mat1b LOI1 = binOrtho(cv::Rect(cv::Point(0, 710), cv::Point(999, 710 + 1)));
+			cv::Mat1b LOI2 = binOrtho(cv::Rect(cv::Point(0, 677), cv::Point(999, 677 + 1)));
+			cv::Mat1b LOI3 = binOrtho(cv::Rect(cv::Point(0, 644), cv::Point(999, 644 + 1)));
+			cv::Mat1b LOI4 = binOrtho(cv::Rect(cv::Point(0, 611), cv::Point(999, 611 + 1)));
+			cv::Mat1b LOI5 = binOrtho(cv::Rect(cv::Point(0, 580), cv::Point(999, 580 + 1)));
+			cv::Mat1b LOI = LOI1 | LOI2 | LOI3 | LOI4 | LOI5;
+			//cv::imshow("LOI", LOI);
+			cv::Mat colorImage;
+			cv::cvtColor(binOrtho, colorImage, CV_GRAY2BGR);
+			cv::line(colorImage, cv::Point(0, 710), cv::Point(999, 710), cv::Scalar(0, 0, 255));
+			cv::line(colorImage, cv::Point(0, 677), cv::Point(999, 677), cv::Scalar(0, 0, 255));
+			cv::line(colorImage, cv::Point(0, 644), cv::Point(999, 644), cv::Scalar(0, 0, 255));
+			cv::line(colorImage, cv::Point(0, 611), cv::Point(999, 611), cv::Scalar(0, 0, 255));
+			cv::line(colorImage, cv::Point(0, 580), cv::Point(999, 580), cv::Scalar(0, 0, 255));
+
+			int leftEdge = -1;
+			int rightEdge = LOI1.cols;
+
+			for (int x = LOI1.cols - 1; x >= 0; x--) {
+				if (LOI1(cv::Point(x, 0)) == 255) {
+					rightEdge = x;
+					break;
+				}
+			}
+
+			for (int x = rightEdge - 150; x >= 0; x--) {
+				if (LOI(cv::Point(x, 0)) == 255) {
+					leftEdge = x;
+					break;
+				}
+			}
+
+
+			int middle = (int)std::round((rightEdge - leftEdge) / 2.0) + leftEdge;
+			
+			cv::line(colorImage, cv::Point(sollwert, 580), cv::Point(sollwert, 710), cv::Scalar(255, 204, 0));
+			cv::line(colorImage, cv::Point(middle, 580), cv::Point(middle, 710), cv::Scalar(0, 255, 0));
+			double output = 0.0;
+			if (sollwert == -1) {
+				sollwert = middle;
+			} else {
+				double processValue = 0.05*(sollwert - middle);
+				output = pidController.calculate(0.0, processValue);
+				//std::cout << output << std::endl;
+			}
+			outputImage = colorImage;
+			return output;
+		}
+		double trainNetwork(cv::Mat image, double steering, cv::Mat &outputImage) {
+			static int trainBatchSize = 10;
+			cv::Mat imageFloat;
+			cv::Mat currentImage;
+			cv::Mat grayImage;
+			cv::cvtColor(image, grayImage, CV_RGBA2GRAY);
+			cv::resize(grayImage, currentImage, cv::Size(64, 32));
+			cv::Mat equalizedImage;
+			cv::equalizeHist(currentImage, equalizedImage);
+			equalizedImage.convertTo(imageFloat, CV_32FC1, (1 / 128.0), -1.0);
+			cv::Mat row = imageFloat.reshape(1, 1);
+			cv::Mat training_classification = cv::Mat(1, 1, CV_32FC1, cv::Scalar(steering));
+
+			if (j == 0)
+			{
+				inputs = cv::Mat(trainBatchSize, row.cols, CV_32FC1);
+				samples = cv::Mat(trainBatchSize, 1, CV_32FC1);
+			}
+
+			row.copyTo(inputs(cv::Rect(0, j, row.cols, row.rows)));
+			training_classification.copyTo(samples(cv::Rect(0, j, training_classification.cols, training_classification.rows)));
+
+			if (j >= trainBatchSize -1) {
+				
+				if (steeringBarValue <= 0.5) {
+					cv::Ptr<cv::ml::TrainData> trainData = cv::ml::TrainData::create(inputs, cv::ml::SampleTypes::ROW_SAMPLE, samples);
+					try {
+						if (ann->isTrained()) {
+							ann->train(trainData, cv::ml::ANN_MLP::TrainFlags::UPDATE_WEIGHTS);
+						}
+						else {
+							ann->train(trainData);
+						}
+					} catch (cv::Exception e) {
+						std::string what = e.what();
+						std::cout << what << std::endl;
+					}
+				
+				} else {
+					std::cout << "skipped training" << std::endl;
+				}
+				j = 0;
+			}
+			else
+			{
+				j++;
+			}
+
+			cv::Mat output;
+			double predicted = 0.0;
+
+			if (ann->isTrained()) {
+
+				try
+				{
+					//ann->predict(row, output);
+					//predicted = output.at<float>(0, 0);
+				}
+				catch (cv::Exception e)
+				{
+					std::string w = e.what();
+					std::cout << e.what();
+				}
+			} else {
+				std::cout << "ANN is not trained" << std::endl;
+			}
+
+			outputImage = cv::Mat(51, 200, CV_8UC3, cv::Scalar(0, 0, 0));
+			int colPredicted = (int)std::round(100.0*(predicted + 1.0));
+			int colSteering = (int)std::round(100.0*(steering + 1.0));
+
+			cv::line(outputImage, cv::Point(0, 25), cv::Point(200, 25), cv::Scalar(255, 255, 255));
+			cv::line(outputImage, cv::Point(colSteering, 0), cv::Point(colSteering, 24), cv::Scalar(255, 204, 0));
+			cv::line(outputImage, cv::Point(colPredicted, 26), cv::Point(colPredicted, 50), cv::Scalar(0, 255, 0));
+			return predicted;
+
+
+		}
 };
 
 
@@ -468,11 +527,12 @@ int main() {
 	//cv::Mat transformationMatrix;
 	//cv::FileStorage fileStorage("C:\\ptemp\\transform.yml", cv::FileStorage::READ);
 	//fileStorage["transformationMatrix"] >> transformationMatrix;
-
-	//cv::Mat image = cv::imread("C:\\ptemp\\trainingData4\\00460_+0.070000000.png", CV_LOAD_IMAGE_GRAYSCALE);
+	//
+	//cv::Mat image = cv::imread("C:\\ptemp\\trainingData11\\00000_+0.000000000.png", CV_LOAD_IMAGE_GRAYSCALE);
+	////cv::Mat image = cv::imread("C:\\ptemp\\trainingData4\\00460_+0.070000000.png", CV_LOAD_IMAGE_GRAYSCALE);
 
 	//cv::Mat orthoImage;
-	//cv::warpPerspective(image, orthoImage, transformationMatrix, cv::Size(1000, 1000), CV_INTER_NN);
+	//cv::warpPerspective(image, orthoImage, transformationMatrix, cv::Size(1000, 1000), CV_INTER_LANCZOS4);
 	//cv::imshow("orthoImage", orthoImage);
 	//cv::Mat binOrtho;
 	//int windowSize = 501;

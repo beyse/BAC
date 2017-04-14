@@ -8,6 +8,8 @@
 
 #include <boost/algorithm/string.hpp>
 #include <boost/lexical_cast.hpp>
+#include <boost/format.hpp>
+#include <boost/thread.hpp>
 
 #include <vector>
 #include <string>
@@ -35,23 +37,75 @@ struct VehicleInput {
 	VehicleInput(const string &str) {
 		fromString(str);
 	}
+	VehicleInput(const VehicleInput &other) {
+		throttle = other.throttle;
+		brake = other.brake;
+		steering = other.steering;
+	}
 
-	float throttle; //between 0 and 1
-	float brake;	 //between 0 and 1
-	float steering; //between -1 and +1
-	
-	string toString() {
+	void setThrottle(float value) {
+		boost::lock_guard<boost::mutex> lock(m_mutex);
+		throttle = value;
+	}
+	void setBrake(float value) {
+		boost::lock_guard<boost::mutex> lock(m_mutex);
+		brake = value;
+	}
+	void setSteering(float value) {
+		boost::lock_guard<boost::mutex> lock(m_mutex);
+		steering = value;
+	}
+
+	void changeThrottle(float value) {
+		boost::lock_guard<boost::mutex> lock(m_mutex);
+		throttle += value;
+	}
+	void changeBrake(float value) {
+		boost::lock_guard<boost::mutex> lock(m_mutex);
+		brake += value;
+	}
+	void changeSteering(float value) {
+		boost::lock_guard<boost::mutex> lock(m_mutex);
+		steering += value;
+	}
+
+
+	float getThrottle() {
+		boost::lock_guard<boost::mutex> lock(m_mutex);
+		return throttle;
+	}
+	float setBrake() {
+		boost::lock_guard<boost::mutex> lock(m_mutex);
+		return brake;
+	}
+	float setSteering() {
+		boost::lock_guard<boost::mutex> lock(m_mutex);
+		return steering;
+	}
+
+	const std::string toString() {
 		//converts this struct to a string
 		//example: "0.3;0.0;-0.89"
-		std::stringstream strstream;
-		strstream
-			<< throttle << ";"
-			<< brake << ";"
-			<< steering;
 
-		return strstream.str();
+		boost::lock_guard<boost::mutex> lock(m_mutex);
+
+		std::string retval;
+		retval = (boost::format("%1.2f;%1.2f;%1.2f;")
+			% throttle
+			% brake
+			% steering).str();
+
+		//std::stringstream strstream;
+		//strstream
+		//	<< throttle << ";"
+		//	<< brake << ";"
+		//	<< steering << ";";
+
+		return retval;
 	}
 	void fromString(const std::string &input) {
+		boost::lock_guard<boost::mutex> lock(m_mutex);
+
 		vector<string> fields;
 		boost::algorithm::split(fields, input, boost::is_any_of(";"));
 		if (fields.size() != 3) {
@@ -63,6 +117,12 @@ struct VehicleInput {
 
 		return;
 	}
+
+private:
+	float throttle; //between 0 and 1
+	float brake;	 //between 0 and 1
+	float steering; //between -1 and +1
+	boost::mutex m_mutex;
 };
 
 //decodes 4 byte little endian encoded byte array to unsigned 32 bit integer
@@ -116,7 +176,7 @@ public:
 		return true;
 	}
 	bool Send(VehicleInput input) {
-		std::string message = input.toString();
+		const std::string message = input.toString();
 		if (steeringSocket.get() == 0) {
 			return false;
 		}
@@ -233,51 +293,97 @@ private:
 class ImageProcessing {
 private:
 	cv::Ptr<cv::ml::ANN_MLP> ann;
+	cv::Mat retinaWeights;
 public:
 	ImageProcessing() {
-		ann = cv::Algorithm::load<cv::ml::ANN_MLP>("C:\\ptemp\\trainedNetwork.ann");
+		ann = cv::Algorithm::load<cv::ml::ANN_MLP>("C:\\Temp\\anotherNetwork.ann");
 		bool trained = ann->isTrained();
-		//ann->load<cv::ml::ANN_MLP>("C:\\Temp\\trainedNetwork.ann");
+		cv::Mat1d inputLayerWeights = ann->getWeights(0);
+		cv::Mat1d halfWeights = cv::Mat1d(1, inputLayerWeights.cols / 2);
+		for (int c = 0; c < inputLayerWeights.cols; c += 2) {
+			int n = c / 2;
+			halfWeights(cv::Point(n, 0)) = inputLayerWeights(cv::Point(c, 0));
+		}
+		halfWeights = halfWeights.reshape(0, 32);
+		double min, max;
+		cv::minMaxLoc(halfWeights, &min, &max);
+		halfWeights.convertTo(retinaWeights, CV_8UC1, 255.0 / (max - min), -255.0*min / (max - min));
 	}
 
 	double processImage(const cv::Mat& image) {
 		cv::Mat imageFloat;
 		cv::Mat currentImage;
-		cv::imshow("image", image);
-		cv::waitKey(1);
+		cv::imshow("input image", image);
+		
 		cv::Mat grayImage;
 		cv::cvtColor(image, grayImage, CV_RGBA2GRAY);
-		cv::resize(grayImage, currentImage, cv::Size(64, 32));
-		cv::Mat equalizedImage;
-		cv::equalizeHist(currentImage, equalizedImage);
-		equalizedImage.convertTo(imageFloat, CV_32FC1, (1 / 128.0), -1.0);
+		currentImage = grayImage;
+		cv::Mat bin;
+		int windowSize = 501;
+		double C = -100;
+		cv::adaptiveThreshold(currentImage, bin, 255.0, CV_ADAPTIVE_THRESH_MEAN_C, CV_THRESH_BINARY, windowSize, C);
+		cv::Mat resizedBin;
+		cv::resize(bin, resizedBin, cv::Size(64, 32));
+		cv::Mat activationImage = retinaWeights.mul(resizedBin, 1 / 10.0);
+		cv::Mat colorActivation;
+		cv::applyColorMap(activationImage, colorActivation, cv::COLORMAP_JET);
+		cv::resize(colorActivation, colorActivation, cv::Size(512, 256), 0.0, 0.0, CV_INTER_NN);
+		
+		cv::imshow("retina activation", colorActivation);
+		resizedBin.convertTo(imageFloat, CV_32FC1, (1 / 128.0), -1.0);
 		cv::Mat row = imageFloat.reshape(1, 1);
 		cv::Mat output;
 		try
 		{
 			ann->predict(row, output);
+			
 		}
 		catch (cv::Exception e)
 		{
 			std::string w = e.what();
 			std::cout << e.what();
 		}
-		double angle = output.at<float>(0, 0);
-		if (angle >= 0) {
-			angle = std::pow(angle, 4);
-		}
-		else {
-			angle = -std::pow(-angle, 4);
-		}
+		double predicted = output.at<float>(0, 0);
+		std::cout << "\rprediction:" << predicted << "       ";
 
-		std::cout << "\rprediction:" << angle << "       ";
-		return angle;
+		cv::Mat outputImage = cv::Mat(50, 200, CV_8UC3, cv::Scalar(0, 0, 0));
+		int colPredicted = (int)std::round(100.0*(predicted + 1.0));
+
+		cv::line(outputImage, cv::Point(colPredicted, 0), cv::Point(colPredicted, 50), cv::Scalar(0, 255, 0), 3);
+		cv::imshow("output", outputImage);
+		cv::waitKey(1);
+		return predicted;
 	}
 };
 
 int main() {
-	//cv::Mat image = cv::imread("C:\\Temp\\example.png");
-	//return 0;
+	//cv::Mat image = cv::imread("C:\\ptemp\\trainingData9\\00000_+0.000000000.png", CV_LOAD_IMAGE_GRAYSCALE);
+	//int windowSize = 501;
+	//double C = -100;
+	//cv::adaptiveThreshold(image, image, 255, CV_ADAPTIVE_THRESH_MEAN_C, CV_THRESH_BINARY, windowSize, C);
+	//cv::resize(image, image, cv::Size(64, 32));
+	//
+	//cv::Ptr<cv::ml::ANN_MLP> ann;
+	//ann = cv::Algorithm::load<cv::ml::ANN_MLP>("C:\\Temp\\anotherNetwork.ann");
+	//int cn = 0;
+	//int rows = 32;
+	//cv::Mat1d weights = ann->getWeights(0);// .reshape(cn, rows);
+	//cv::Mat layerSizes = ann->getLayerSizes();
+	//cv::Mat1d halfWeights = cv::Mat1d(1, weights.cols / 2);
+	//cv::Mat1d otherHalf = cv::Mat1d(1, weights.cols / 2);
+	//for (int c = 0; c < weights.cols; c+=2) {
+	//	int n = c / 2;
+	//	halfWeights(cv::Point(n, 0)) = weights(cv::Point(c, 0));
+	//	otherHalf(cv::Point(n, 0)) = weights(cv::Point(c + 1, 0));
+	//}
+	//
+	//cv::Mat w = halfWeights.reshape(0, 32);
+	//double min, max;
+	//cv::minMaxLoc(w, &min, &max);
+	//w.convertTo(w, CV_8UC1, 255.0 / (max - min), -255.0*min / (max - min));
+	//cv::Mat activation = w.mul(image, 1/255.0);
+
+
 
 	int remoteImagePort = 9771;
 	int remoteSteeringPort = 9772;
@@ -293,7 +399,7 @@ int main() {
 
 	ImageCallbackFunction imageCallback = [&](cv::Mat& image) {
 		double angle = virtualDriver.processImage(image);
-		vehicleInput.steering = angle;
+		vehicleInput.setSteering(angle);
 	};
 
 
@@ -328,30 +434,30 @@ int main() {
 
 	while (true) {
 		int key = cv::waitKey(2);
-		vehicleInput.throttle = 0.3;
+		vehicleInput.setThrottle(0.3);
 		switch (key) {
 		case 'w': 
-			vehicleInput.throttle += 0.3;
-			vehicleInput.brake = 0.0;
+			vehicleInput.changeThrottle(+0.3);
+			vehicleInput.setBrake(0.0);
 			break;
 		case 's': 
-			vehicleInput.brake += 0.5;
-			vehicleInput.throttle = 0.0;
+			vehicleInput.changeBrake(+0.5);
+			vehicleInput.setThrottle(0.0);
 			break;
 		case 'a':
-			vehicleInput.steering -= 0.3333;
+			vehicleInput.changeSteering(-0.3333);
 			break;
 		case 'd':
-			vehicleInput.steering += 0.3333;
+			vehicleInput.changeSteering(0.3333);
 			break;
 		case ' ':
-			vehicleInput.throttle = 0.0;
-			vehicleInput.brake = 0.0;
+			vehicleInput.setThrottle(0.0);
+			vehicleInput.setBrake(0.0);
 		default:
 			break;
 		}
 
-		blenderInterface.Send(vehicleInput.toString());
+		blenderInterface.Send(vehicleInput);
 		std::string data;
 
 	}
